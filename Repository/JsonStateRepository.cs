@@ -6,7 +6,7 @@ public class JsonStateRepository: IStateRepository
     
     public Dictionary<string, FileItem> LoadState()
     {
-        if (File.Exists(StateFilePath)) return new Dictionary<string, FileItem>();
+        if (!File.Exists(StateFilePath)) return new Dictionary<string, FileItem>();
         var json = File.ReadAllText(StateFilePath);
         return JsonSerializer.Deserialize<Dictionary<string, FileItem>>(json) ?? new();
     }
