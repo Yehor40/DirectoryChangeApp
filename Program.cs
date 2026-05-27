@@ -12,6 +12,7 @@ var app = builder.Build();
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
+app.UseDefaultFiles();
 app.UseStaticFiles(); 
 app.MapControllers();
 app.Run();
