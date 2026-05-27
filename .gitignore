@@ -3,6 +3,6 @@ obj/
 /packages/
 riderModule.iml
 /_ReSharper.Caches/
-state.json
-.idea
-global.json
+.idea/
+*DotSettings.user
+appsettings.Development.json
