@@ -1,0 +1,64 @@
+name: CI/CD
+
+on:
+  push:
+    branches:
+      - main
+      - "backend/**"
+      - "frontend/**"
+      - "infra/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore DirectoryChangeApp.sln
+
+      - name: Build
+        run: dotnet build DirectoryChangeApp.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test DirectoryChangeApp.sln --configuration Release --no-build --verbosity normal
+
+      - name: Static code analysis
+        run: dotnet build DirectoryChangeApp.sln --configuration Release --no-restore -p:EnableNETAnalyzers=true -p:AnalysisMode=AllEnabledByDefault
+
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
