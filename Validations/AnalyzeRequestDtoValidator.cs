@@ -6,7 +6,7 @@ public class AnalyzeRequestDtoValidator: AbstractValidator<AnalyzeRequestDto>
     public AnalyzeRequestDtoValidator()
     {
         RuleFor(x => x.DirectoryPath)
-            .NotEmpty().WithMessage("Cesta k adresáři nesmí být prázdná.")
-            .Must(Directory.Exists).WithMessage("Zadaný adresář neexistuje na serveru.");
+            .NotEmpty().WithMessage("Path to catalog can't be empty.")
+            .Must(Directory.Exists).WithMessage("Current catalog doesn't exist.");
     }
 }
