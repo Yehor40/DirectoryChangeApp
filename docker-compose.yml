@@ -1,0 +1,13 @@
+services:
+  directory-change-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: directory-change-app:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./state.json:/app/state.json
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
