@@ -1,15 +1,19 @@
 namespace DirectoryChangeApp.Services;
 
-public class DirectoryAnalyzerService(IStateRepository stateRepository,ILogger<DirectoryAnalyzerService> logger) : IDirectoryAnalyzerService
+public class DirectoryAnalyzerService(
+    IStateRepository stateRepository,
+    IRuntimePathResolver runtimePathResolver,
+    ILogger<DirectoryAnalyzerService> logger) : IDirectoryAnalyzerService
 {
 
     public AnalysisReport Analyze(string directoryPath)
     {
         logger.LogInformation("Starting the analysis of the catalog: {Path}", directoryPath);
+        var runtimePath = runtimePathResolver.Resolve(directoryPath);
         
-        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+        if (string.IsNullOrWhiteSpace(runtimePath) || !Directory.Exists(runtimePath))
         {
-            throw new ArgumentException("Bad or not a valid catalog path.");
+            throw new ArgumentException("Bad or not a valid catalog path in current runtime.");
         }
 
         var currentState = stateRepository.LoadState(directoryPath);
@@ -18,10 +22,10 @@ public class DirectoryAnalyzerService(IStateRepository stateRepository,ILogger<D
 
         var allFiles = new List<string>();
         var allDirs = new List<string>();
-        EnumerateDirectoryTree(directoryPath, allFiles, allDirs, isRoot: true);
+        EnumerateDirectoryTree(runtimePath, allFiles, allDirs, isRoot: true);
 
-        ProcessFiles(directoryPath, allFiles, currentState, newState, report);
-        ProcessDirectories(directoryPath, allDirs, currentState, newState, report);
+        ProcessFiles(runtimePath, allFiles, currentState, newState, report);
+        ProcessDirectories(runtimePath, allDirs, currentState, newState, report);
         ProcessDeletedItems(currentState, newState, report);
 
         stateRepository.SaveState(directoryPath, newState);

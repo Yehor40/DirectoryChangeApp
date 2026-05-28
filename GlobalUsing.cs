@@ -6,6 +6,7 @@ global using System.Security.Cryptography;
 global using Microsoft.AspNetCore.Mvc;
 global using DirectoryChangeApp.Data;
 global using DirectoryChangeApp.Services;
+global using Microsoft.EntityFrameworkCore;
 global using FluentValidation;
 global using System.Net;
 global using DirectoryChangeApp.Data.Mappings;

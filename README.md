@@ -21,7 +21,7 @@ Své řešení stručně popište a zmiňte i jeho případná omezení.
 
 ## Přehled řešení
 
-Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá do souboru `state.json` a každé další skenování porovnává vůči tomuto uloženému stavu.
+Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá do databáze SQLite (`state.db`) a každé další skenování porovnává vůči tomuto uloženému stavu.
 
 Analýza reportuje:
 - nové soubory a adresáře
@@ -29,7 +29,7 @@ Analýza reportuje:
 - odstraněné soubory a adresáře
 - verze souborů, začínající na verzi 1, která se při změně obsahu souboru zvyšuje
 
-Aplikace nepoužívá databázi.
+Aplikace nově ukládá stav pomocí Entity Framework Core a SQLite databáze (původní požadavek úkolu specifikoval nepoužívat databázi, tato funkčnost byla přidána na výslovnou žádost).
 
 ## Požadavky
 
@@ -39,6 +39,18 @@ Aplikace nepoužívá databázi.
 ## Spuštění pomocí Dockeru
 
 Z kořenového adresáře repozitáře:
+
+1) (Volitelné, doporučeno) vytvořte soubor `.env` s kořenovou cestou hostitele, kterou chcete analyzovat:
+
+```env
+HOST_FILES_ROOT=/absolute/path/on/host
+```
+
+Příklad:
+- macOS/Linux: `HOST_FILES_ROOT=/Users/john/Documents`
+- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/Documents`
+
+2) Spusťte:
 
 ```bash
 docker compose up --build
@@ -54,7 +66,13 @@ Swagger:
 http://localhost:8080/swagger
 ```
 
-Docker compose připojí `state.json` do kontejneru, takže stav analýzy zůstane zachován v souboru uvnitř repozitáře.
+Docker compose připojí:
+- `./data` -> `/app/data` (SQLite stav aplikace)
+- `${HOST_FILES_ROOT}` -> `/host-files` (čtení souborů hostitelského zařízení)
+
+Aplikace mapuje vstupní cestu z hostitele na cestu v kontejneru přes proměnné:
+- `PathMapping__HostPathPrefix`
+- `PathMapping__ContainerPathPrefix`
 
 ## Jak používat
 
@@ -89,11 +107,11 @@ Spouští obnovu balíčků, build, testy, build .NET analyzátoru a CodeQL anal
 
 ## Omezení
 
-- Aplikace ukládá stav do jediného lokálního souboru `state.json`.
+- Aplikace ukládá stav do lokální SQLite databáze `state.db`.
 - Změny souborů jsou detekovány pomocí hashe obsahu, nikoliv pomocí událostí souborového systému.
 - Změny adresářů jsou detekovány pouze během manuální analýzy.
 - Úkol předpokládá soubory do velikosti 50 MB a maximálně 100 souborů v adresáři.
-- Zadaná cesta k adresáři musí být přístupná běžícímu procesu. Při spuštění v Dockeru musí být hostitelské cesty připojeny do kontejneru, aby je bylo možné analyzovat.
+- Zadaná cesta k adresáři musí být přístupná běžícímu procesu. V Dockeru musí být hostitelská cesta pod `HOST_FILES_ROOT`, aby ji bylo možné mapovat do kontejneru.
 
 ---
 
@@ -119,7 +137,7 @@ Briefly describe your solution and mention any possible limitations.
 
 ## Solution Overview
 
-The application scans a directory path provided from the web UI. It stores the latest known state in `state.json` and compares the next scan against that saved state.
+The application scans a directory path provided from the web UI. It stores the latest known state in a SQLite database (`state.db`) and compares the next scan against that saved state.
 
 The analysis reports:
 - new files and directories
@@ -127,7 +145,7 @@ The analysis reports:
 - removed files and directories
 - file versions, starting at version 1 and incrementing when file content changes
 
-No database is used.
+The application uses Entity Framework Core with an SQLite database (the original task requested not to use a database, but this was implemented as an explicit user request).
 
 ## Requirements
 
@@ -137,6 +155,18 @@ No database is used.
 ## Run With Docker
 
 From the repository root:
+
+1) (Optional, recommended) create `.env` with the host root path you want to scan:
+
+```env
+HOST_FILES_ROOT=/absolute/path/on/host
+```
+
+Examples:
+- macOS/Linux: `HOST_FILES_ROOT=/Users/john/Documents`
+- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/Documents`
+
+2) Start:
 
 ```bash
 docker compose up --build
@@ -152,7 +182,13 @@ Swagger:
 http://localhost:8080/swagger
 ```
 
-The compose setup mounts `state.json` into the container so the analysis state persists in the repository file.
+The compose setup mounts:
+- `./data` -> `/app/data` (application SQLite state)
+- `${HOST_FILES_ROOT}` -> `/host-files` (host device files, read-only)
+
+The app maps incoming host paths to container paths using:
+- `PathMapping__HostPathPrefix`
+- `PathMapping__ContainerPathPrefix`
 
 ## How To Use
 
@@ -188,8 +224,8 @@ It runs restore, build, tests, .NET analyzer build, and CodeQL analysis.
 
 ## Limitations
 
-- The app stores state in a single local `state.json` file.
+- The app stores state in a local SQLite database file `state.db`.
 - File changes are detected by content hash, not by filesystem events.
 - Directory changes are detected during manual analysis only.
 - The task assumes files up to 50 MB and up to 100 files per directory.
-- The entered directory path must be accessible to the running process. When running in Docker, host paths must be mounted into the container before they can be analyzed.
+- The entered directory path must be accessible to the running process. In Docker mode, the path must be under `HOST_FILES_ROOT` so it can be mapped inside the container.
