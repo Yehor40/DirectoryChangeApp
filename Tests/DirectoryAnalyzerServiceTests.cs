@@ -28,7 +28,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         File.WriteAllText(testFilePath, "Test file contents");
 
         _stateRepositoryMock
-        .Setup(repo => repo.LoadState())
+        .Setup(repo => repo.LoadState(_tempDirPath))
         .Returns(new Dictionary<string, FileItem>());
 
         //
@@ -42,7 +42,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         Assert.Empty(report.Deleted);
 
         _stateRepositoryMock.Verify(
-            repo => repo.SaveState(It.Is<Dictionary<string, FileItem>>(d => d.ContainsKey("test.txt"))), 
+            repo => repo.SaveState(_tempDirPath, It.Is<Dictionary<string, FileItem>>(d => d.ContainsKey("test.txt"))), 
             Times.Once
         );
     }
@@ -55,7 +55,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         File.WriteAllText(testFilePath, "Changed file contents");
 
         _stateRepositoryMock
-            .Setup(repo => repo.LoadState())
+            .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>
             {
                 [testFileName] = new() { Hash = "old-hash", Version = 2, IsDirectory = false }
@@ -70,7 +70,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         Assert.Empty(report.Deleted);
 
         _stateRepositoryMock.Verify(
-            repo => repo.SaveState(It.Is<Dictionary<string, FileItem>>(d =>
+            repo => repo.SaveState(_tempDirPath, It.Is<Dictionary<string, FileItem>>(d =>
                 d.ContainsKey(testFileName) && d[testFileName].Version == 3)),
             Times.Once
         );
@@ -80,7 +80,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     public void Analyze_WhenFileWasRemoved_ShouldAddToDeletedList()
     {
         _stateRepositoryMock
-            .Setup(repo => repo.LoadState())
+            .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>
             {
                 ["removed.txt"] = new() { Hash = "old-hash", Version = 4, IsDirectory = false }
@@ -95,7 +95,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         Assert.Contains("removed.txt (Last version 4)", report.Deleted);
 
         _stateRepositoryMock.Verify(
-            repo => repo.SaveState(It.Is<Dictionary<string, FileItem>>(d => !d.ContainsKey("removed.txt"))),
+            repo => repo.SaveState(_tempDirPath, It.Is<Dictionary<string, FileItem>>(d => !d.ContainsKey("removed.txt"))),
             Times.Once
         );
     }
@@ -114,9 +114,9 @@ public class DirectoryAnalyzerServiceTests:IDisposable
                 ["tracked.txt"] = new() { Hash = "saved-hash", Version = 5, IsDirectory = false }
             };
 
-            repository.SaveState(expectedState);
+            repository.SaveState(_tempDirPath, expectedState);
 
-            var state = repository.LoadState();
+            var state = repository.LoadState(_tempDirPath);
 
             Assert.True(state.ContainsKey("tracked.txt"));
             Assert.Equal("saved-hash", state["tracked.txt"].Hash);
@@ -127,6 +127,82 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         {
             Directory.SetCurrentDirectory(originalCurrentDirectory);
         }
+    }
+
+    [Fact]
+    public void JsonStateRepository_LoadState_WhenDifferentDirectoryWasSaved_ShouldReturnEmptyState()
+    {
+        var originalCurrentDirectory = Directory.GetCurrentDirectory();
+        var otherDirectoryPath = Path.Combine(_tempDirPath, "other");
+        Directory.CreateDirectory(otherDirectoryPath);
+
+        try
+        {
+            Directory.SetCurrentDirectory(_tempDirPath);
+            var repository = new JsonStateRepository();
+            var otherState = new Dictionary<string, FileItem>
+            {
+                ["project-file.txt"] = new() { Hash = "old-hash", Version = 1, IsDirectory = false }
+            };
+
+            repository.SaveState(otherDirectoryPath, otherState);
+
+            var state = repository.LoadState(_tempDirPath);
+
+            Assert.Empty(state);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCurrentDirectory);
+        }
+    }
+
+    [Fact]
+    public void Analyze_WhenFileReplacedByDirectory_ShouldReportDeletedAndAdded()
+    {
+        string testFileName = "test_item";
+        string testFilePath = Path.Combine(_tempDirPath, testFileName);
+        Directory.CreateDirectory(testFilePath);
+
+        _stateRepositoryMock
+            .Setup(repo => repo.LoadState(_tempDirPath))
+            .Returns(new Dictionary<string, FileItem>
+            {
+                [testFileName] = new() { Hash = "old-hash", Version = 2, IsDirectory = false }
+            });
+
+        var report = _service.Analyze(_tempDirPath);
+
+        Assert.NotNull(report);
+        Assert.Single(report.Added);
+        Assert.Contains("[Catalog] test_item", report.Added);
+        Assert.Empty(report.Modified);
+        Assert.Single(report.Deleted);
+        Assert.Contains("test_item (Last version 2)", report.Deleted);
+    }
+
+    [Fact]
+    public void Analyze_WhenDirectoryReplacedByFile_ShouldReportDeletedAndAdded()
+    {
+        string testFileName = "test_item";
+        string testFilePath = Path.Combine(_tempDirPath, testFileName);
+        File.WriteAllText(testFilePath, "New file contents");
+
+        _stateRepositoryMock
+            .Setup(repo => repo.LoadState(_tempDirPath))
+            .Returns(new Dictionary<string, FileItem>
+            {
+                [testFileName] = new() { IsDirectory = true, Version = 1 }
+            });
+
+        var report = _service.Analyze(_tempDirPath);
+
+        Assert.NotNull(report);
+        Assert.Single(report.Added);
+        Assert.Contains("test_item (Version 1)", report.Added);
+        Assert.Empty(report.Modified);
+        Assert.Single(report.Deleted);
+        Assert.Contains("[Catalog] test_item (Last version 1)", report.Deleted);
     }
 
     public void Dispose()
