@@ -17,5 +17,6 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Data Source=/app/data/state.db
       PathMapping__HostPathPrefix: ${HOST_FILES_ROOT:-}
       PathMapping__ContainerPathPrefix: /host-files

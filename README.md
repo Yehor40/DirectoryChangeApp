@@ -40,7 +40,7 @@ Aplikace nově ukládá stav pomocí Entity Framework Core a SQLite databáze (p
 
 Z kořenového adresáře repozitáře:
 
-1) (Volitelné, doporučeno) vytvořte soubor `.env` s kořenovou cestou hostitele, kterou chcete analyzovat:
+1) Vytvořte soubor `.env` s kořenovou cestou hostitele, kterou chcete analyzovat:
 
 ```env
 HOST_FILES_ROOT=/absolute/path/on/host
@@ -99,6 +99,19 @@ Spouští obnovu balíčků, build, testy, build .NET analyzátoru a CodeQL anal
 - Úkol předpokládá soubory do velikosti 50 MB a maximálně 100 souborů v adresáři.
 - Zadaná cesta k adresáři musí být přístupná běžícímu procesu. V Dockeru musí být hostitelská cesta pod `HOST_FILES_ROOT`, aby ji bylo možné mapovat do kontejneru.
 
+## Docker troubleshooting
+
+Pokud vidíte `SQLite Error 1: 'no such table: DirectoryStates'`:
+
+1. Ujistěte se, že složka `Migrations/` je v repozitáři (bez ní se schéma nevytvoří).
+2. Smažte starou databázi a spusťte znovu:
+   ```bash
+   rm -f data/state.db data/state.db-*
+   docker compose down
+   docker compose up --build
+   ```
+3. Ověřte, že volume `./data` je zapisovatelný pro kontejner.
+
 ---
 
 # DirectoryChangeApp (English Version)
@@ -142,7 +155,7 @@ The application uses Entity Framework Core with an SQLite database (the original
 
 From the repository root:
 
-1) (Optional, recommended) create `.env` with the host root path you want to scan:
+1) Create `.env` with the host root path you want to scan:
 
 ```env
 HOST_FILES_ROOT=/absolute/path/on/host
@@ -202,3 +215,16 @@ It runs restore, build, tests, .NET analyzer build, and CodeQL analysis.
 - Directory changes are detected during manual analysis only.
 - The task assumes files up to 50 MB and up to 100 files per directory.
 - The entered directory path must be accessible to the running process. In Docker mode, the path must be under `HOST_FILES_ROOT` so it can be mapped inside the container.
+
+## Docker troubleshooting
+
+If you see `SQLite Error 1: 'no such table: DirectoryStates'`:
+
+1. Ensure the `Migrations/` folder is present in the repository (without it, schema creation will not run).
+2. Delete the old database and restart:
+   ```bash
+   rm -f data/state.db data/state.db-*
+   docker compose down
+   docker compose up --build
+   ```
+3. Ensure the `./data` volume is writable by the container.
