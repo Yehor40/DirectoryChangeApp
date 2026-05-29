@@ -8,7 +8,15 @@ public static class AnalysisMapper
         {
             Added = result.Added,
             Modified = result.Modified,
-            Deleted = result.Deleted
+            MetadataChanged = result.MetadataChanged,
+            Removed = result.Removed,
+            RemovedDirectories = result.RemovedDirectories,
+            SkippedFiles = result.SkippedFiles,
+            SkippedDirectories = result.SkippedDirectories,
+            UnstableFiles = result.UnstableFiles,
+            IsPartial = result.IsPartial,
+            ScanDurationMs = result.ScanDurationMs,
+            ScanTimestampUtc = result.ScanTimestampUtc
         };
     }
 }
