@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace DirectoryChangeApp.Services;
 
 public class DirectoryAnalyzerService(
@@ -5,33 +7,42 @@ public class DirectoryAnalyzerService(
     IRuntimePathResolver runtimePathResolver,
     ILogger<DirectoryAnalyzerService> logger) : IDirectoryAnalyzerService
 {
-    public AnalysisReport Analyze(string directoryPath)
+    public async Task<AnalysisReport> AnalyzeAsync(string directoryPath)
     {
-        logger.LogInformation("Starting file analysis for directory: {Path}", directoryPath);
+        logger.LogInformation("Starting parallel analysis of directory: {Path}", directoryPath);
         var runtimePath = runtimePathResolver.Resolve(directoryPath);
 
         if (string.IsNullOrWhiteSpace(runtimePath) || !Directory.Exists(runtimePath))
         {
-            throw new ArgumentException("Bad or not a valid directory path in current runtime.");
+            throw new ArgumentException("Bad or not a valid catalog path in current runtime.");
         }
 
         var currentState = stateRepository.LoadState(directoryPath);
         var newState = new Dictionary<string, FileItem>();
         var report = new AnalysisReport();
 
-        var allFiles = new List<string>();
-        EnumerateFiles(runtimePath, allFiles, isRoot: true);
+        // Thread-safe collections for parallel disk scanning
+        var allFiles = new ConcurrentBag<string>();
 
+        // Launch parallel async directory tree enumeration
+        await EnumerateFilesAsync(runtimePath, allFiles);
+
+        logger.LogDebug("Disk scan complete. Found {FileCount} files to hash.", allFiles.Count);
+
+        // Sequential processing phase (state dictionaries are not thread-safe)
         var potentialAddedFiles = ProcessFiles(runtimePath, allFiles, currentState, newState, report);
         ProcessDeletedItems(currentState, newState, report, potentialAddedFiles);
 
         stateRepository.SaveState(directoryPath, newState);
 
         logger.LogInformation(
-            "File analysis finished. Changes - New: {Added}, Modified: {Mod}, Deleted: {Del}",
+            "Analysis finished. Changes — New: {Added}, Modified: {Mod}, Deleted: {Del}",
             report.Added.Count, report.Modified.Count, report.Deleted.Count);
+
         return report;
     }
+
+    // ── File processing (sequential, after scan) ────────────────────────
 
     private List<string> ProcessFiles(
         string basePath,
@@ -85,6 +96,8 @@ public class DirectoryAnalyzerService(
         return potentialAddedFiles;
     }
 
+    // ── Deletion & rename detection ─────────────────────────────────────
+
     private void ProcessDeletedItems(
         Dictionary<string, FileItem> currentState,
         Dictionary<string, FileItem> newState,
@@ -95,6 +108,7 @@ public class DirectoryAnalyzerService(
             .Where(path => !newState.ContainsKey(path))
             .ToList();
 
+        // Strict 1-to-1 rename detection by hash
         var actuallyAddedFiles = new List<string>();
         foreach (var addedFile in potentialAddedFiles)
         {
@@ -102,7 +116,8 @@ public class DirectoryAnalyzerService(
             var matchedDeletedFiles = potentialDeletedFiles
                 .Where(path => currentState[path].Hash == addedHash)
                 .ToList();
-            var matchedAddedFilesCount = potentialAddedFiles.Count(path => newState[path].Hash == addedHash);
+            var matchedAddedFilesCount = potentialAddedFiles
+                .Count(path => newState[path].Hash == addedHash);
 
             if (matchedDeletedFiles.Count == 1 && matchedAddedFilesCount == 1)
             {
@@ -129,6 +144,8 @@ public class DirectoryAnalyzerService(
         }
     }
 
+    // ── Hashing ─────────────────────────────────────────────────────────
+
     private static string ComputeFileHash(string filePath)
     {
         using var sha256 = SHA256.Create();
@@ -137,46 +154,41 @@ public class DirectoryAnalyzerService(
         return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
     }
 
-    private void EnumerateFiles(string directoryPath, List<string> files, bool isRoot = false)
-    {
-        string[] childFiles;
-        string[] childDirectories;
+    // ── Parallel async directory tree enumeration ───────────────────────
 
+    private async Task EnumerateFilesAsync(
+        string directoryPath,
+        ConcurrentBag<string> collectedFiles)
+    {
         try
         {
-            childFiles = Directory.GetFiles(directoryPath)
-                .Where(f => !Path.GetFileName(f).StartsWith('.'))
-                .ToArray();
-            childDirectories = Directory.GetDirectories(directoryPath)
-                .Where(d => !Path.GetFileName(d).StartsWith('.'))
-                .ToArray();
+            // Collect files in the current directory (skip hidden/dot-files)
+            foreach (var file in Directory.EnumerateFiles(directoryPath))
+            {
+                if (!Path.GetFileName(file).StartsWith('.'))
+                {
+                    collectedFiles.Add(file);
+                }
+            }
+
+            // Recurse into subdirectories in parallel (skip hidden/dot-dirs)
+            var subDirs = Directory.EnumerateDirectories(directoryPath)
+                .Where(d => !Path.GetFileName(d).StartsWith('.'));
+
+            var tasks = subDirs.Select(subDir =>
+                Task.Run(() => EnumerateFilesAsync(subDir, collectedFiles)));
+
+            await Task.WhenAll(tasks);
         }
         catch (UnauthorizedAccessException ex)
         {
-            if (isRoot)
-            {
-                throw;
-            }
-
-            logger.LogWarning(ex, "Skipping inaccessible directory: {Path}", directoryPath);
-            return;
+            logger.LogWarning("Skipping inaccessible directory: {Path}. Reason: {Message}",
+                directoryPath, ex.Message);
         }
         catch (IOException ex)
         {
-            if (isRoot)
-            {
-                throw;
-            }
-
-            logger.LogWarning(ex, "Skipping unreadable directory: {Path}", directoryPath);
-            return;
-        }
-
-        files.AddRange(childFiles);
-
-        foreach (var childDirectory in childDirectories)
-        {
-            EnumerateFiles(childDirectory, files);
+            logger.LogWarning("Skipping unreadable directory: {Path}. Reason: {Message}",
+                directoryPath, ex.Message);
         }
     }
 }

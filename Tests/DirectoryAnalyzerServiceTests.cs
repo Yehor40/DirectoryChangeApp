@@ -22,7 +22,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     }
     
     [Fact]
-    public void Analyze_WhenFileIsNew_ShouldAddToAddedListWithVersion1()
+    public async Task Analyze_WhenFileIsNew_ShouldAddToAddedListWithVersion1()
     {
       
         string testFileName = "test.txt";
@@ -34,7 +34,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
         .Returns(new Dictionary<string, FileItem>());
 
         //
-        var report = _service.Analyze(_tempDirPath);
+        var report = await  _service.AnalyzeAsync(_tempDirPath);
 
        
         Assert.NotNull(report);
@@ -50,7 +50,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     }
 
     [Fact]
-    public void Analyze_WhenFileWasChanged_ShouldAddToModifiedListWithIncrementedVersion()
+    public async Task Analyze_WhenFileWasChanged_ShouldAddToModifiedListWithIncrementedVersion()
     {
         string testFileName = "test.txt";
         string testFilePath = Path.Combine(_tempDirPath, testFileName);
@@ -63,7 +63,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
                 [testFileName] = new() { Hash = "old-hash", Version = 2 }
             });
 
-        var report = _service.Analyze(_tempDirPath);
+        var report = await _service.AnalyzeAsync(_tempDirPath);
 
         Assert.NotNull(report);
         Assert.Empty(report.Added);
@@ -79,7 +79,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     }
 
     [Fact]
-    public void Analyze_WhenFileWasRemoved_ShouldAddToDeletedList()
+    public async Task Analyze_WhenFileWasRemoved_ShouldAddToDeletedList()
     {
         _stateRepositoryMock
             .Setup(repo => repo.LoadState(_tempDirPath))
@@ -88,7 +88,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
                 ["removed.txt"] = new() { Hash = "old-hash", Version = 4 }
             });
 
-        var report = _service.Analyze(_tempDirPath);
+        var report =  await _service.AnalyzeAsync(_tempDirPath);
 
         Assert.NotNull(report);
         Assert.Empty(report.Added);
@@ -159,7 +159,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     }
 
     [Fact]
-    public void Analyze_WhenFileInSubfolderIsNew_ShouldReportRelativePath()
+    public async Task Analyze_WhenFileInSubfolderIsNew_ShouldReportRelativePath()
     {
         var subfolder = Path.Combine(_tempDirPath, "docs");
         Directory.CreateDirectory(subfolder);
@@ -169,14 +169,14 @@ public class DirectoryAnalyzerServiceTests:IDisposable
             .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>());
 
-        var report = _service.Analyze(_tempDirPath);
+        var report = await _service.AnalyzeAsync(_tempDirPath);
 
         Assert.Single(report.Added);
         Assert.Contains("docs/readme.txt (Version 1)", report.Added);
     }
 
     [Fact]
-    public void Analyze_WhenFileReplacedByDirectory_ShouldReportFileAsDeleted()
+    public async Task Analyze_WhenFileReplacedByDirectory_ShouldReportFileAsDeleted()
     {
         const string testFileName = "test_item";
         Directory.CreateDirectory(Path.Combine(_tempDirPath, testFileName));
@@ -188,7 +188,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
                 [testFileName] = new() { Hash = "old-hash", Version = 2 }
             });
 
-        var report = _service.Analyze(_tempDirPath);
+        var report = await _service.AnalyzeAsync(_tempDirPath);
 
         Assert.Empty(report.Added);
         Assert.Empty(report.Modified);
