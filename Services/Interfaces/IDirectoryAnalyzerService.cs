@@ -2,5 +2,5 @@ namespace DirectoryChangeApp.Services.Interfaces;
 
 public interface IDirectoryAnalyzerService
 {
-    AnalysisReport Analyze(string directoryPath);
+    Task<AnalysisReport> AnalyzeAsync(string directoryPath);
 }
