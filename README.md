@@ -21,20 +21,31 @@ Své řešení stručně popište a zmiňte i jeho případná omezení.
 
 ## Přehled řešení
 
-Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá do databáze SQLite (`state.db`) a každé další skenování porovnává vůči tomuto uloženému stavu.
+Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá do souboru `state.json` a každé další skenování porovnává vůči tomuto uloženému stavu.
 
 Analýza reportuje:
-- nové soubory a adresáře
+- nové soubory (včetně souborů v podadresářích)
 - upravené soubory (detekováno pomocí SHA-256 hashe obsahu)
-- odstraněné soubory a adresáře
+- odstraněné soubory
 - verze souborů, začínající na verzi 1, která se při změně obsahu souboru zvyšuje
 
-Aplikace nově ukládá stav pomocí Entity Framework Core a SQLite databáze (původní požadavek úkolu specifikoval nepoužívat databázi, tato funkčnost byla přidána na výslovnou žádost).
+Databáze se nepoužívá — pouze lokální JSON soubor.
 
 ## Požadavky
 
 - .NET 8 SDK
-- Docker Desktop (volitelné)
+- Docker Desktop
+
+## Běžné spuštění
+
+Pomoci příkázů
+
+```bash
+#sestaví projekt
+dotnet build
+#spustí projekt
+dotnet run
+```
 
 ## Spuštění pomocí Dockeru
 
@@ -47,8 +58,8 @@ HOST_FILES_ROOT=/absolute/path/on/host
 ```
 
 Příklad:
-- macOS/Linux: `HOST_FILES_ROOT=/Users/john/Documents`
-- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/Documents`
+- macOS/Linux: `HOST_FILES_ROOT=/Users/john/`
+- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/`
 
 2) Spusťte:
 
@@ -67,7 +78,7 @@ http://localhost:8080/swagger
 ```
 
 Docker compose připojí:
-- `./data` -> `/app/data` (SQLite stav aplikace)
+- `./state.json` -> `/app/state.json` (stav analýzy)
 - `${HOST_FILES_ROOT}` -> `/host-files` (čtení souborů hostitelského zařízení)
 
 Aplikace mapuje vstupní cestu z hostitele na cestu v kontejneru přes proměnné:
@@ -93,26 +104,12 @@ Spouští obnovu balíčků, build, testy, build .NET analyzátoru a CodeQL anal
 
 ## Omezení
 
-- Aplikace ukládá stav do lokální SQLite databáze `state.db`.
+- Aplikace ukládá stav do lokálního souboru `state.json`.
 - Změny souborů jsou detekovány pomocí hashe obsahu, nikoliv pomocí událostí souborového systému.
-- Změny adresářů jsou detekovány pouze během manuální analýzy.
+- Sledují se pouze soubory; vytvoření nebo smazání složky samo o sobě se nehlásí.
 - Úkol předpokládá soubory do velikosti 50 MB a maximálně 100 souborů v adresáři.
 - Zadaná cesta k adresáři musí být přístupná běžícímu procesu. V Dockeru musí být hostitelská cesta pod `HOST_FILES_ROOT`, aby ji bylo možné mapovat do kontejneru.
 
-## Docker troubleshooting
-
-Pokud vidíte `SQLite Error 1: 'no such table: DirectoryStates'`:
-
-1. Ujistěte se, že složka `Migrations/` je v repozitáři (bez ní se schéma nevytvoří).
-2. Smažte starou databázi a spusťte znovu:
-   ```bash
-   rm -f data/state.db data/state.db-*
-   docker compose down
-   docker compose up --build
-   ```
-3. Ověřte, že volume `./data` je zapisovatelný pro kontejner.
-
----
 
 # DirectoryChangeApp (English Version)
 
@@ -136,20 +133,32 @@ Briefly describe your solution and mention any possible limitations.
 
 ## Solution Overview
 
-The application scans a directory path provided from the web UI. It stores the latest known state in a SQLite database (`state.db`) and compares the next scan against that saved state.
+The application scans a directory path provided from the web UI. It stores the latest known state in a `state.json` file and compares the next scan against that saved state.
 
 The analysis reports:
-- new files and directories
+- new files (including files in subfolders)
 - modified files, detected by SHA-256 content hash
-- removed files and directories
+- removed files
 - file versions, starting at version 1 and incrementing when file content changes
 
-The application uses Entity Framework Core with an SQLite database (the original task requested not to use a database, but this was implemented as an explicit user request).
+No database is used — only a local JSON file.
 
 ## Requirements
 
 - .NET 8 SDK
 - Docker Desktop, optional
+
+## Normal startup
+
+With commands
+
+```bash
+#builds project
+dotnet build
+#runs project
+dotnet run
+```
+
 
 ## Run With Docker
 
@@ -162,8 +171,8 @@ HOST_FILES_ROOT=/absolute/path/on/host
 ```
 
 Examples:
-- macOS/Linux: `HOST_FILES_ROOT=/Users/john/Documents`
-- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/Documents`
+- macOS/Linux: `HOST_FILES_ROOT=/Users/john/`
+- Windows (Docker Desktop): `HOST_FILES_ROOT=C:/Users/John/`
 
 2) Start:
 
@@ -182,7 +191,7 @@ http://localhost:8080/swagger
 ```
 
 The compose setup mounts:
-- `./data` -> `/app/data` (application SQLite state)
+- `./state.json` -> `/app/state.json` (analysis state)
 - `${HOST_FILES_ROOT}` -> `/host-files` (host device files, read-only)
 
 The app maps incoming host paths to container paths using:
@@ -210,21 +219,8 @@ It runs restore, build, tests, .NET analyzer build, and CodeQL analysis.
 
 ## Limitations
 
-- The app stores state in a local SQLite database file `state.db`.
+- The app stores state in a local `state.json` file.
 - File changes are detected by content hash, not by filesystem events.
-- Directory changes are detected during manual analysis only.
+- Only files are tracked; creating or deleting a folder alone is not reported.
 - The task assumes files up to 50 MB and up to 100 files per directory.
 - The entered directory path must be accessible to the running process. In Docker mode, the path must be under `HOST_FILES_ROOT` so it can be mapped inside the container.
-
-## Docker troubleshooting
-
-If you see `SQLite Error 1: 'no such table: DirectoryStates'`:
-
-1. Ensure the `Migrations/` folder is present in the repository (without it, schema creation will not run).
-2. Delete the old database and restart:
-   ```bash
-   rm -f data/state.db data/state.db-*
-   docker compose down
-   docker compose up --build
-   ```
-3. Ensure the `./data` volume is writable by the container.

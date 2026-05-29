@@ -10,13 +10,13 @@
 
 <main class="container">
     <header class="app-header">
-        <h1>Catalog change detector</h1>
+        <h1>File change detector</h1>
     </header>
 
     <section class="analyzer-box">
         <div class="input-group">
             <input type="text" id="directoryPath" placeholder="Enter absolute path">
-            <button id="btnAnalyze" class="btn-primary">Analyze catalog</button>
+            <button id="btnAnalyze" class="btn-primary">Analyze files</button>
         </div>
         <div id="errorMessage" class="alert alert-danger hidden"></div>
     </section>
@@ -30,7 +30,7 @@
         <h2>Analysis results:</h2>
 
         <div class="report-card card-added">
-            <h3>New items: (<span id="countAdded">0</span>)</h3>
+            <h3>New files: (<span id="countAdded">0</span>)</h3>
             <ul id="listAdded" class="report-list"></ul>
         </div>
 
@@ -40,7 +40,7 @@
         </div>
 
         <div class="report-card card-deleted">
-            <h3>Removed items: (<span id="countDeleted">0</span>)</h3>
+            <h3>Removed files: (<span id="countDeleted">0</span>)</h3>
             <ul id="listDeleted" class="report-list"></ul>
         </div>
     </section>

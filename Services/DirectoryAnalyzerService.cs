@@ -5,15 +5,14 @@ public class DirectoryAnalyzerService(
     IRuntimePathResolver runtimePathResolver,
     ILogger<DirectoryAnalyzerService> logger) : IDirectoryAnalyzerService
 {
-
     public AnalysisReport Analyze(string directoryPath)
     {
-        logger.LogInformation("Starting the analysis of the catalog: {Path}", directoryPath);
+        logger.LogInformation("Starting file analysis for directory: {Path}", directoryPath);
         var runtimePath = runtimePathResolver.Resolve(directoryPath);
-        
+
         if (string.IsNullOrWhiteSpace(runtimePath) || !Directory.Exists(runtimePath))
         {
-            throw new ArgumentException("Bad or not a valid catalog path in current runtime.");
+            throw new ArgumentException("Bad or not a valid directory path in current runtime.");
         }
 
         var currentState = stateRepository.LoadState(directoryPath);
@@ -21,22 +20,28 @@ public class DirectoryAnalyzerService(
         var report = new AnalysisReport();
 
         var allFiles = new List<string>();
-        var allDirs = new List<string>();
-        EnumerateDirectoryTree(runtimePath, allFiles, allDirs, isRoot: true);
+        EnumerateFiles(runtimePath, allFiles, isRoot: true);
 
-        ProcessFiles(runtimePath, allFiles, currentState, newState, report);
-        ProcessDirectories(runtimePath, allDirs, currentState, newState, report);
-        ProcessDeletedItems(currentState, newState, report);
+        var potentialAddedFiles = ProcessFiles(runtimePath, allFiles, currentState, newState, report);
+        ProcessDeletedItems(currentState, newState, report, potentialAddedFiles);
 
         stateRepository.SaveState(directoryPath, newState);
-        
-        logger.LogInformation("Analysis successfully finished. Changes - New: {Added}, Modified: {Mod}, Deleted: {Del}", 
+
+        logger.LogInformation(
+            "File analysis finished. Changes - New: {Added}, Modified: {Mod}, Deleted: {Del}",
             report.Added.Count, report.Modified.Count, report.Deleted.Count);
         return report;
     }
-    
-    private void ProcessFiles(string basePath, IEnumerable<string> files, Dictionary<string, FileItem> currentState, Dictionary<string, FileItem> newState, AnalysisReport report)
+
+    private List<string> ProcessFiles(
+        string basePath,
+        IEnumerable<string> files,
+        Dictionary<string, FileItem> currentState,
+        Dictionary<string, FileItem> newState,
+        AnalysisReport report)
     {
+        var potentialAddedFiles = new List<string>();
+
         foreach (var filePath in files)
         {
             var relativePath = Path.GetRelativePath(basePath, filePath);
@@ -57,7 +62,7 @@ public class DirectoryAnalyzerService(
                 continue;
             }
 
-            if (currentState.TryGetValue(relativePath, out var oldState) && !oldState.IsDirectory)
+            if (currentState.TryGetValue(relativePath, out var oldState))
             {
                 if (oldState.Hash == currentHash)
                 {
@@ -65,46 +70,66 @@ public class DirectoryAnalyzerService(
                 }
                 else
                 {
-                    var updatedItem = new FileItem { Hash = currentHash, Version = oldState.Version + 1, IsDirectory = false };
+                    var updatedItem = new FileItem { Hash = currentHash, Version = oldState.Version + 1 };
                     newState[relativePath] = updatedItem;
                     report.Modified.Add($"{relativePath} (Version {updatedItem.Version})");
                 }
             }
             else
             {
-                newState[relativePath] = new FileItem { Hash = currentHash, Version = 1, IsDirectory = false };
-                report.Added.Add($"{relativePath} (Version 1)");
+                newState[relativePath] = new FileItem { Hash = currentHash, Version = 1 };
+                potentialAddedFiles.Add(relativePath);
             }
         }
+
+        return potentialAddedFiles;
     }
-    
-    private void ProcessDirectories(string basePath, IEnumerable<string> dirs, Dictionary<string, FileItem> currentState, Dictionary<string, FileItem> newState, AnalysisReport report)
+
+    private void ProcessDeletedItems(
+        Dictionary<string, FileItem> currentState,
+        Dictionary<string, FileItem> newState,
+        AnalysisReport report,
+        List<string> potentialAddedFiles)
     {
-        foreach (var dirPath in dirs)
+        var potentialDeletedFiles = currentState.Keys
+            .Where(path => !newState.ContainsKey(path))
+            .ToList();
+
+        var actuallyAddedFiles = new List<string>();
+        foreach (var addedFile in potentialAddedFiles)
         {
-            var relativePath = Path.GetRelativePath(basePath, dirPath);
-            newState[relativePath] = new FileItem { IsDirectory = true, Version = 1 };
-            
-            if (!currentState.TryGetValue(relativePath, out var oldState) || !oldState.IsDirectory)
+            var addedHash = newState[addedFile].Hash;
+            var matchedDeletedFiles = potentialDeletedFiles
+                .Where(path => currentState[path].Hash == addedHash)
+                .ToList();
+            var matchedAddedFilesCount = potentialAddedFiles.Count(path => newState[path].Hash == addedHash);
+
+            if (matchedDeletedFiles.Count == 1 && matchedAddedFilesCount == 1)
             {
-                report.Added.Add($"[Catalog] {relativePath}");
+                var matchedDeletedFile = matchedDeletedFiles.First();
+                potentialDeletedFiles.Remove(matchedDeletedFile);
+                var oldVersion = currentState[matchedDeletedFile].Version;
+                newState[addedFile].Version = oldVersion;
+                report.Modified.Add($"{addedFile} (Version {oldVersion})");
             }
+            else
+            {
+                actuallyAddedFiles.Add(addedFile);
+            }
+        }
+
+        foreach (var added in actuallyAddedFiles)
+        {
+            report.Added.Add($"{added} (Version 1)");
+        }
+
+        foreach (var deleted in potentialDeletedFiles)
+        {
+            report.Deleted.Add($"{deleted} (Last version {currentState[deleted].Version})");
         }
     }
 
-    private void ProcessDeletedItems(Dictionary<string, FileItem> currentState, Dictionary<string, FileItem> newState, AnalysisReport report)
-    {
-        foreach (var oldItem in currentState)
-        {
-            if (!newState.TryGetValue(oldItem.Key, out var newItem) || newItem.IsDirectory != oldItem.Value.IsDirectory)
-            {
-                string prefix = oldItem.Value.IsDirectory ? "[Catalog] " : "";
-                report.Deleted.Add($"{prefix}{oldItem.Key} (Last version {oldItem.Value.Version})");
-            }
-        }
-    }
-
-    private string ComputeFileHash(string filePath)
+    private static string ComputeFileHash(string filePath)
     {
         using var sha256 = SHA256.Create();
         using var stream = File.OpenRead(filePath);
@@ -112,15 +137,19 @@ public class DirectoryAnalyzerService(
         return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
     }
 
-    private void EnumerateDirectoryTree(string directoryPath, List<string> files, List<string> directories, bool isRoot = false)
+    private void EnumerateFiles(string directoryPath, List<string> files, bool isRoot = false)
     {
         string[] childFiles;
         string[] childDirectories;
 
         try
         {
-            childFiles = Directory.GetFiles(directoryPath);
-            childDirectories = Directory.GetDirectories(directoryPath);
+            childFiles = Directory.GetFiles(directoryPath)
+                .Where(f => !Path.GetFileName(f).StartsWith('.'))
+                .ToArray();
+            childDirectories = Directory.GetDirectories(directoryPath)
+                .Where(d => !Path.GetFileName(d).StartsWith('.'))
+                .ToArray();
         }
         catch (UnauthorizedAccessException ex)
         {
@@ -129,7 +158,7 @@ public class DirectoryAnalyzerService(
                 throw;
             }
 
-            logger.LogWarning(ex, "Skipping inaccessible catalog: {Path}", directoryPath);
+            logger.LogWarning(ex, "Skipping inaccessible directory: {Path}", directoryPath);
             return;
         }
         catch (IOException ex)
@@ -139,7 +168,7 @@ public class DirectoryAnalyzerService(
                 throw;
             }
 
-            logger.LogWarning(ex, "Skipping unreadable catalog: {Path}", directoryPath);
+            logger.LogWarning(ex, "Skipping unreadable directory: {Path}", directoryPath);
             return;
         }
 
@@ -147,8 +176,7 @@ public class DirectoryAnalyzerService(
 
         foreach (var childDirectory in childDirectories)
         {
-            directories.Add(childDirectory);
-            EnumerateDirectoryTree(childDirectory, files, directories);
+            EnumerateFiles(childDirectory, files);
         }
     }
 }

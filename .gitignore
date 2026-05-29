@@ -7,8 +7,5 @@ riderModule.iml
 *DotSettings.user
 appsettings.Development.json
 
-data/state.db
-data/state.db-journal
-data/state.db-shm
-data/state.db-wal
+state.json
 .env

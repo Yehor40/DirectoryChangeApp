@@ -60,7 +60,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
             .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>
             {
-                [testFileName] = new() { Hash = "old-hash", Version = 2, IsDirectory = false }
+                [testFileName] = new() { Hash = "old-hash", Version = 2 }
             });
 
         var report = _service.Analyze(_tempDirPath);
@@ -85,7 +85,7 @@ public class DirectoryAnalyzerServiceTests:IDisposable
             .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>
             {
-                ["removed.txt"] = new() { Hash = "old-hash", Version = 4, IsDirectory = false }
+                ["removed.txt"] = new() { Hash = "old-hash", Version = 4 }
             });
 
         var report = _service.Analyze(_tempDirPath);
@@ -103,113 +103,97 @@ public class DirectoryAnalyzerServiceTests:IDisposable
     }
 
     [Fact]
-    public void SqliteStateRepository_LoadState_WhenStateWasSaved_ShouldReturnSavedState()
+    public void JsonStateRepository_LoadState_WhenStateWasSaved_ShouldReturnSavedState()
     {
-        var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
-        connection.Open();
+        var originalCurrentDirectory = Directory.GetCurrentDirectory();
 
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite(connection)
-            .Options;
-
-        using var context = new AppDbContext(options);
-        context.Database.EnsureCreated();
-
-        var repository = new SqliteStateRepository(context);
-        var expectedState = new Dictionary<string, FileItem>
+        try
         {
-            ["tracked.txt"] = new() { Hash = "saved-hash", Version = 5, IsDirectory = false }
-        };
+            Directory.SetCurrentDirectory(_tempDirPath);
+            var repository = new JsonStateRepository();
+            var expectedState = new Dictionary<string, FileItem>
+            {
+                ["tracked.txt"] = new() { Hash = "saved-hash", Version = 5 }
+            };
 
-        repository.SaveState(_tempDirPath, expectedState);
+            repository.SaveState(_tempDirPath, expectedState);
 
-        var state = repository.LoadState(_tempDirPath);
+            var state = repository.LoadState(_tempDirPath);
 
-        Assert.True(state.ContainsKey("tracked.txt"));
-        Assert.Equal("saved-hash", state["tracked.txt"].Hash);
-        Assert.Equal(5, state["tracked.txt"].Version);
-        Assert.False(state["tracked.txt"].IsDirectory);
-
-        connection.Dispose();
+            Assert.True(state.ContainsKey("tracked.txt"));
+            Assert.Equal("saved-hash", state["tracked.txt"].Hash);
+            Assert.Equal(5, state["tracked.txt"].Version);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCurrentDirectory);
+        }
     }
 
     [Fact]
-    public void SqliteStateRepository_LoadState_WhenDifferentDirectoryWasSaved_ShouldReturnEmptyState()
+    public void JsonStateRepository_LoadState_WhenDifferentDirectoryWasSaved_ShouldReturnEmptyState()
     {
         var otherDirectoryPath = Path.Combine(_tempDirPath, "other");
         Directory.CreateDirectory(otherDirectoryPath);
+        var originalCurrentDirectory = Directory.GetCurrentDirectory();
 
-        var connection = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=:memory:");
-        connection.Open();
-
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite(connection)
-            .Options;
-
-        using var context = new AppDbContext(options);
-        context.Database.EnsureCreated();
-
-        var repository = new SqliteStateRepository(context);
-        var otherState = new Dictionary<string, FileItem>
+        try
         {
-            ["project-file.txt"] = new() { Hash = "old-hash", Version = 1, IsDirectory = false }
-        };
+            Directory.SetCurrentDirectory(_tempDirPath);
+            var repository = new JsonStateRepository();
+            var otherState = new Dictionary<string, FileItem>
+            {
+                ["project-file.txt"] = new() { Hash = "old-hash", Version = 1 }
+            };
 
-        repository.SaveState(otherDirectoryPath, otherState);
+            repository.SaveState(otherDirectoryPath, otherState);
 
-        var state = repository.LoadState(_tempDirPath);
+            var state = repository.LoadState(_tempDirPath);
 
-        Assert.Empty(state);
-
-        connection.Dispose();
+            Assert.Empty(state);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(originalCurrentDirectory);
+        }
     }
 
     [Fact]
-    public void Analyze_WhenFileReplacedByDirectory_ShouldReportDeletedAndAdded()
+    public void Analyze_WhenFileInSubfolderIsNew_ShouldReportRelativePath()
     {
-        string testFileName = "test_item";
-        string testFilePath = Path.Combine(_tempDirPath, testFileName);
-        Directory.CreateDirectory(testFilePath);
+        var subfolder = Path.Combine(_tempDirPath, "docs");
+        Directory.CreateDirectory(subfolder);
+        File.WriteAllText(Path.Combine(subfolder, "readme.txt"), "hello");
+
+        _stateRepositoryMock
+            .Setup(repo => repo.LoadState(_tempDirPath))
+            .Returns(new Dictionary<string, FileItem>());
+
+        var report = _service.Analyze(_tempDirPath);
+
+        Assert.Single(report.Added);
+        Assert.Contains("docs/readme.txt (Version 1)", report.Added);
+    }
+
+    [Fact]
+    public void Analyze_WhenFileReplacedByDirectory_ShouldReportFileAsDeleted()
+    {
+        const string testFileName = "test_item";
+        Directory.CreateDirectory(Path.Combine(_tempDirPath, testFileName));
 
         _stateRepositoryMock
             .Setup(repo => repo.LoadState(_tempDirPath))
             .Returns(new Dictionary<string, FileItem>
             {
-                [testFileName] = new() { Hash = "old-hash", Version = 2, IsDirectory = false }
+                [testFileName] = new() { Hash = "old-hash", Version = 2 }
             });
 
         var report = _service.Analyze(_tempDirPath);
 
-        Assert.NotNull(report);
-        Assert.Single(report.Added);
-        Assert.Contains("[Catalog] test_item", report.Added);
+        Assert.Empty(report.Added);
         Assert.Empty(report.Modified);
         Assert.Single(report.Deleted);
         Assert.Contains("test_item (Last version 2)", report.Deleted);
-    }
-
-    [Fact]
-    public void Analyze_WhenDirectoryReplacedByFile_ShouldReportDeletedAndAdded()
-    {
-        string testFileName = "test_item";
-        string testFilePath = Path.Combine(_tempDirPath, testFileName);
-        File.WriteAllText(testFilePath, "New file contents");
-
-        _stateRepositoryMock
-            .Setup(repo => repo.LoadState(_tempDirPath))
-            .Returns(new Dictionary<string, FileItem>
-            {
-                [testFileName] = new() { IsDirectory = true, Version = 1 }
-            });
-
-        var report = _service.Analyze(_tempDirPath);
-
-        Assert.NotNull(report);
-        Assert.Single(report.Added);
-        Assert.Contains("test_item (Version 1)", report.Added);
-        Assert.Empty(report.Modified);
-        Assert.Single(report.Deleted);
-        Assert.Contains("[Catalog] test_item (Last version 1)", report.Deleted);
     }
 
     public void Dispose()
