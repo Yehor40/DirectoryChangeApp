@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-
 namespace DirectoryChangeApp.Services;
 
 public class DirectoryAnalyzerService(
@@ -7,188 +5,567 @@ public class DirectoryAnalyzerService(
     IRuntimePathResolver runtimePathResolver,
     ILogger<DirectoryAnalyzerService> logger) : IDirectoryAnalyzerService
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Locks = new(StringComparer.OrdinalIgnoreCase);
+
     public async Task<AnalysisReport> AnalyzeAsync(string directoryPath)
     {
-        logger.LogInformation("Starting parallel analysis of directory: {Path}", directoryPath);
+        var timestampStr = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+        logger.LogInformation("[AUDIT] [{Timestamp}] Starting file analysis for directory: {Path}", timestampStr, directoryPath);
+        
         var runtimePath = runtimePathResolver.Resolve(directoryPath);
+        if (!string.IsNullOrWhiteSpace(runtimePath))
+        {
+            runtimePath = Path.GetFullPath(runtimePath);
+        }
 
         if (string.IsNullOrWhiteSpace(runtimePath) || !Directory.Exists(runtimePath))
         {
-            throw new ArgumentException("Bad or not a valid catalog path in current runtime.");
+            throw new ArgumentException("Bad or not a valid directory path in current runtime.");
         }
 
-        var currentState = stateRepository.LoadState(directoryPath);
-        var newState = new Dictionary<string, FileItem>();
-        var report = new AnalysisReport();
+        var rootKey = NormalizeRootKey(runtimePath);
+        var semaphore = Locks.GetOrAdd(rootKey, _ => new SemaphoreSlim(1, 1));
 
-        // Thread-safe collections for parallel disk scanning
-        var allFiles = new ConcurrentBag<string>();
+        await semaphore.WaitAsync();
+        
+        var totalSw = Stopwatch.StartNew();
+        try
+        {
+            // Measure loading previous snapshot
+            var loadSw = Stopwatch.StartNew();
+            var oldSnapshot = stateRepository.LoadSnapshot(directoryPath) ?? new DirectorySnapshot
+            {
+                RootPath = directoryPath
+            };
+            loadSw.Stop();
+            
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] Loaded previous snapshot in {DurationMs:F2} ms. Contains {FileCount} files, {DirCount} directories.",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                loadSw.Elapsed.TotalMilliseconds,
+                oldSnapshot.Files.Count,
+                oldSnapshot.Directories.Count);
 
-        // Launch parallel async directory tree enumeration
-        await EnumerateFilesAsync(runtimePath, allFiles);
+            var scannedFiles = new List<string>();
+            var scannedDirectories = new HashSet<string>(StringComparer.Ordinal);
+            var skippedFiles = new List<string>();
+            var skippedDirectories = new List<string>();
+            var skippedDirectoryPaths = new HashSet<string>(StringComparer.Ordinal);
+            bool isPartial = false;
 
-        logger.LogDebug("Disk scan complete. Found {FileCount} files to hash.", allFiles.Count);
+            // Step 1: Recursive scan (traversal)
+            var scanSw = Stopwatch.StartNew();
+            ScanDirectory(
+                runtimePath,
+                runtimePath,
+                scannedFiles,
+                scannedDirectories,
+                skippedFiles,
+                skippedDirectories,
+                skippedDirectoryPaths,
+                ref isPartial);
+            scanSw.Stop();
 
-        // Sequential processing phase (state dictionaries are not thread-safe)
-        var potentialAddedFiles = ProcessFiles(runtimePath, allFiles, currentState, newState, report);
-        ProcessDeletedItems(currentState, newState, report, potentialAddedFiles);
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] Traversed directory tree in {DurationMs:F2} ms. Discovered {FileCount} files, {DirCount} folders.",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                scanSw.Elapsed.TotalMilliseconds,
+                scannedFiles.Count,
+                scannedDirectories.Count);
 
-        stateRepository.SaveState(directoryPath, newState);
+            // Step 2: Bounded Parallel Hashing & Metadata extraction
+            var hashSw = Stopwatch.StartNew();
+            var fileScanResults = new ConcurrentBag<FileScanResult>();
+            var maxDegree = Math.Max(1, Math.Min(Environment.ProcessorCount, 4));
+            var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = maxDegree };
 
-        logger.LogInformation(
-            "Analysis finished. Changes — New: {Added}, Modified: {Mod}, Deleted: {Del}",
-            report.Added.Count, report.Modified.Count, report.Deleted.Count);
+            await Parallel.ForEachAsync(scannedFiles, parallelOptions, async (filePath, cancellationToken) =>
+            {
+                var relativePath = GetPortableRelativePath(runtimePath, filePath);
 
-        return report;
+                try
+                {
+                    // Read metadata before hashing
+                    var fileInfoBefore = new FileInfo(filePath);
+                    var lengthBefore = fileInfoBefore.Length;
+                    var writeTimeBefore = fileInfoBefore.LastWriteTimeUtc;
+
+                    // Compute SHA-256 hash (hashing large files on separate threadpool threads)
+                    string hash = await Task.Run(() => ComputeFileHash(filePath), cancellationToken);
+
+                    // Read metadata after hashing
+                    var fileInfoAfter = new FileInfo(filePath);
+                    var lengthAfter = fileInfoAfter.Length;
+                    var writeTimeAfter = fileInfoAfter.LastWriteTimeUtc;
+
+                    // Check for instability (modification during read)
+                    if (lengthBefore != lengthAfter || writeTimeBefore != writeTimeAfter)
+                    {
+                        fileScanResults.Add(new FileScanResult
+                        {
+                            RelativePath = relativePath,
+                            IsUnstable = true,
+                            UnstableReason = "Modified during hashing"
+                        });
+                    }
+                    else
+                    {
+                        fileScanResults.Add(new FileScanResult
+                        {
+                            RelativePath = relativePath,
+                            Hash = hash,
+                            Length = lengthAfter,
+                            LastWriteTimeUtc = writeTimeAfter
+                        });
+                    }
+                }
+                catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+                {
+                    fileScanResults.Add(new FileScanResult
+                    {
+                        RelativePath = relativePath,
+                        IsSkipped = true,
+                        SkipReason = ex.Message
+                    });
+                }
+            });
+            hashSw.Stop();
+
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] Completed parallel hashing of {FileCount} files in {DurationMs:F2} ms (MaxDegreeOfParallelism={MaxDegree}).",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                fileScanResults.Count(f => !f.IsSkipped && !f.IsUnstable),
+                hashSw.Elapsed.TotalMilliseconds,
+                maxDegree);
+
+            // Step 3: Comparison logic
+            var compareSw = Stopwatch.StartNew();
+            var report = new AnalysisReport();
+            var newStateFiles = new Dictionary<string, FileSnapshotItem>(StringComparer.Ordinal);
+            var newStateDirs = new HashSet<string>(scannedDirectories, StringComparer.Ordinal);
+
+            // Process scanned files
+            foreach (var result in fileScanResults.OrderBy(r => r.RelativePath))
+            {
+                ProcessScannedFile(result, oldSnapshot, newStateFiles, report, ref isPartial);
+            }
+
+            // Process deleted files
+            var scannedFilePaths = new HashSet<string>(fileScanResults.Select(r => r.RelativePath), StringComparer.Ordinal);
+            foreach (var oldFile in oldSnapshot.Files.Values)
+            {
+                if (!scannedFilePaths.Contains(oldFile.RelativePath))
+                {
+                    if (IsInSkippedDirectory(oldFile.RelativePath, skippedDirectoryPaths))
+                    {
+                        newStateFiles[oldFile.RelativePath] = oldFile;
+                        report.SkippedFiles.Add($"{oldFile.RelativePath} (Reason: Parent directory skipped due to access errors)");
+                    }
+                    else
+                    {
+                        report.Removed.Add($"{oldFile.RelativePath} (Last version {oldFile.Version})");
+                    }
+                }
+            }
+
+            // Process deleted directories
+            foreach (var oldDir in oldSnapshot.Directories)
+            {
+                if (!scannedDirectories.Contains(oldDir))
+                {
+                    if (IsInSkippedDirectory(oldDir, skippedDirectoryPaths))
+                    {
+                        newStateDirs.Add(oldDir);
+                        skippedDirectories.Add($"{oldDir} (Reason: Parent directory skipped due to access errors)");
+                    }
+                    else
+                    {
+                        report.RemovedDirectories.Add(oldDir);
+                    }
+                }
+            }
+
+            // Populate skipped directories in report
+            foreach (var skippedDir in skippedDirectories.OrderBy(d => d))
+            {
+                report.SkippedDirectories.Add(skippedDir);
+            }
+
+            // Populate skipped files from recursive scan phase
+            foreach (var skippedFile in skippedFiles.OrderBy(f => f))
+            {
+                report.SkippedFiles.Add(skippedFile);
+            }
+
+            report.IsPartial = isPartial || skippedFiles.Count > 0 || skippedDirectories.Count > 0;
+            DetectFileRenames(report, oldSnapshot, newStateFiles);
+            compareSw.Stop();
+
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] Completed comparison analysis in {DurationMs:F2} ms.",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                compareSw.Elapsed.TotalMilliseconds);
+
+            // Step 4: Save new snapshot
+            var saveSw = Stopwatch.StartNew();
+            var newSnapshot = new DirectorySnapshot
+            {
+                FormatVersion = 1,
+                RootPath = directoryPath,
+                LastScanTimeUtc = DateTime.UtcNow,
+                Files = newStateFiles,
+                Directories = newStateDirs
+            };
+            stateRepository.SaveSnapshot(directoryPath, newSnapshot);
+            saveSw.Stop();
+
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] Saved updated snapshot atomically to disk in {DurationMs:F2} ms.",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                saveSw.Elapsed.TotalMilliseconds);
+
+            totalSw.Stop();
+            report.ScanDurationMs = totalSw.Elapsed.TotalMilliseconds;
+            report.ScanTimestampUtc = newSnapshot.LastScanTimeUtc;
+
+            logger.LogInformation(
+                "[AUDIT] [{Timestamp}] File analysis completed successfully in {DurationMs:F2} ms. Results - Added: {Added}, Modified: {Mod}, Touched: {Touch}, Removed: {Rem}, Partial: {Partial}",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"),
+                report.ScanDurationMs,
+                report.Added.Count,
+                report.Modified.Count,
+                report.MetadataChanged.Count,
+                report.Removed.Count,
+                report.IsPartial);
+
+            return report;
+        }
+        finally
+        {
+            semaphore.Release();
+        }
     }
 
-    // ── File processing (sequential, after scan) ────────────────────────
+    private void ProcessScannedFile(
+        FileScanResult result,
+        DirectorySnapshot oldSnapshot,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
+        AnalysisReport report,
+        ref bool isPartial)
+    {
+        if (result.IsSkipped)
+        {
+            HandleSkippedFile(result, oldSnapshot, newStateFiles, report);
+            isPartial = true;
+            return;
+        }
 
-    private List<string> ProcessFiles(
-        string basePath,
-        IEnumerable<string> files,
-        Dictionary<string, FileItem> currentState,
-        Dictionary<string, FileItem> newState,
+        if (result.IsUnstable)
+        {
+            HandleUnstableFile(result, oldSnapshot, newStateFiles, report);
+            isPartial = true;
+            return;
+        }
+
+        HandleSuccessfullyHashedFile(result, oldSnapshot, newStateFiles, report);
+    }
+
+    private static void HandleSkippedFile(
+        FileScanResult result,
+        DirectorySnapshot oldSnapshot,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
         AnalysisReport report)
     {
-        var potentialAddedFiles = new List<string>();
-
-        foreach (var filePath in files)
+        report.SkippedFiles.Add($"{result.RelativePath} (Reason: {result.SkipReason})");
+        
+        // Preserve old snapshot entry if it existed to avoid losing history
+        if (oldSnapshot.Files.TryGetValue(result.RelativePath, out var oldItem))
         {
-            var relativePath = Path.GetRelativePath(basePath, filePath);
-            string currentHash;
+            newStateFiles[result.RelativePath] = oldItem;
+        }
+    }
 
+    private static void HandleUnstableFile(
+        FileScanResult result,
+        DirectorySnapshot oldSnapshot,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
+        AnalysisReport report)
+    {
+        report.UnstableFiles.Add($"{result.RelativePath} (Reason: {result.UnstableReason})");
+
+        // Preserve old snapshot entry to avoid updating version during unstable state
+        if (oldSnapshot.Files.TryGetValue(result.RelativePath, out var oldItem))
+        {
+            newStateFiles[result.RelativePath] = oldItem;
+        }
+    }
+
+    private static void HandleSuccessfullyHashedFile(
+        FileScanResult result,
+        DirectorySnapshot oldSnapshot,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
+        AnalysisReport report)
+    {
+        if (oldSnapshot.Files.TryGetValue(result.RelativePath, out var historicalItem))
+        {
+            CompareAndAddExistingFile(result, historicalItem, newStateFiles, report);
+        }
+        else
+        {
+            AddNewFile(result, newStateFiles, report);
+        }
+    }
+
+    private static void CompareAndAddExistingFile(
+        FileScanResult result,
+        FileSnapshotItem historicalItem,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
+        AnalysisReport report)
+    {
+        if (historicalItem.Hash == result.Hash)
+        {
+            if (historicalItem.Length != result.Length || historicalItem.LastWriteTimeUtc != result.LastWriteTimeUtc)
+            {
+                // Metadata changed, content identical
+                var updatedItem = new FileSnapshotItem
+                {
+                    RelativePath = result.RelativePath,
+                    Hash = result.Hash,
+                    Length = result.Length,
+                    LastWriteTimeUtc = result.LastWriteTimeUtc,
+                    Version = historicalItem.Version
+                };
+                newStateFiles[result.RelativePath] = updatedItem;
+                report.MetadataChanged.Add($"{result.RelativePath} (Version {historicalItem.Version})");
+            }
+            else
+            {
+                // Unchanged
+                newStateFiles[result.RelativePath] = historicalItem;
+            }
+        }
+        else
+        {
+            // Content changed, increment version
+            var updatedItem = new FileSnapshotItem
+            {
+                RelativePath = result.RelativePath,
+                Hash = result.Hash,
+                Length = result.Length,
+                LastWriteTimeUtc = result.LastWriteTimeUtc,
+                Version = historicalItem.Version + 1
+            };
+            newStateFiles[result.RelativePath] = updatedItem;
+            report.Modified.Add($"{result.RelativePath} (Version {updatedItem.Version})");
+        }
+    }
+
+    private static void AddNewFile(
+        FileScanResult result,
+        Dictionary<string, FileSnapshotItem> newStateFiles,
+        AnalysisReport report)
+    {
+        var newItem = new FileSnapshotItem
+        {
+            RelativePath = result.RelativePath,
+            Hash = result.Hash,
+            Length = result.Length,
+            LastWriteTimeUtc = result.LastWriteTimeUtc,
+            Version = 1
+        };
+        newStateFiles[result.RelativePath] = newItem;
+        report.Added.Add($"{result.RelativePath} (Version 1)");
+    }
+
+    private void ScanDirectory(
+        string currentPath,
+        string basePath,
+        List<string> scannedFiles,
+        HashSet<string> scannedDirectories,
+        List<string> skippedFiles,
+        List<string> skippedDirectories,
+        HashSet<string> skippedDirectoryPaths,
+        ref bool isPartial)
+    {
+        var name = Path.GetFileName(currentPath);
+        if (currentPath != basePath)
+        {
+            if (name.StartsWith('.') || string.Equals(name, "App_Data", StringComparison.OrdinalIgnoreCase))
+            {
+                return; // silently skip hidden directories and the snapshot App_Data directory
+            }
+        }
+
+        if (currentPath != basePath)
+        {
+            var relDir = GetPortableRelativePath(basePath, currentPath);
+            scannedDirectories.Add(relDir);
+        }
+
+        string[] entries;
+        try
+        {
+            entries = Directory.GetFileSystemEntries(currentPath);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            isPartial = true;
+            var relDir = currentPath == basePath ? "" : GetPortableRelativePath(basePath, currentPath);
+            skippedDirectories.Add($"{relDir} (Reason: {ex.Message})");
+            skippedDirectoryPaths.Add(relDir);
+            return;
+        }
+
+        foreach (var entry in entries)
+        {
+            var entryName = Path.GetFileName(entry);
+            if (entryName.StartsWith('.') || string.Equals(entryName, "App_Data", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            FileAttributes attr;
             try
             {
-                currentHash = ComputeFileHash(filePath);
+                attr = File.GetAttributes(entry);
             }
-            catch (UnauthorizedAccessException ex)
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
-                logger.LogWarning(ex, "Skipping inaccessible file: {Path}", filePath);
-                continue;
-            }
-            catch (IOException ex)
-            {
-                logger.LogWarning(ex, "Skipping unreadable file: {Path}", filePath);
+                isPartial = true;
+                var relEntry = GetPortableRelativePath(basePath, entry);
+                skippedFiles.Add($"{relEntry} (Reason: {ex.Message})");
                 continue;
             }
 
-            if (currentState.TryGetValue(relativePath, out var oldState))
+            // Do not follow symlinks/reparse points to avoid directory loops
+            if ((attr & FileAttributes.ReparsePoint) != 0)
             {
-                if (oldState.Hash == currentHash)
-                {
-                    newState[relativePath] = oldState;
-                }
-                else
-                {
-                    var updatedItem = new FileItem { Hash = currentHash, Version = oldState.Version + 1 };
-                    newState[relativePath] = updatedItem;
-                    report.Modified.Add($"{relativePath} (Version {updatedItem.Version})");
-                }
+                isPartial = true;
+                var relEntry = GetPortableRelativePath(basePath, entry);
+                skippedFiles.Add($"{relEntry} (Reason: Symbolic link or reparse point skipped)");
+                continue;
+            }
+
+            if ((attr & FileAttributes.Directory) != 0)
+            {
+                ScanDirectory(
+                    entry,
+                    basePath,
+                    scannedFiles,
+                    scannedDirectories,
+                    skippedFiles,
+                    skippedDirectories,
+                    skippedDirectoryPaths,
+                    ref isPartial);
             }
             else
             {
-                newState[relativePath] = new FileItem { Hash = currentHash, Version = 1 };
-                potentialAddedFiles.Add(relativePath);
+                scannedFiles.Add(entry);
             }
         }
-
-        return potentialAddedFiles;
     }
 
-    // ── Deletion & rename detection ─────────────────────────────────────
-
-    private void ProcessDeletedItems(
-        Dictionary<string, FileItem> currentState,
-        Dictionary<string, FileItem> newState,
-        AnalysisReport report,
-        List<string> potentialAddedFiles)
+    private static string NormalizeRootKey(string directoryPath)
     {
-        var potentialDeletedFiles = currentState.Keys
-            .Where(path => !newState.ContainsKey(path))
-            .ToList();
-
-        // Strict 1-to-1 rename detection by hash
-        var actuallyAddedFiles = new List<string>();
-        foreach (var addedFile in potentialAddedFiles)
-        {
-            var addedHash = newState[addedFile].Hash;
-            var matchedDeletedFiles = potentialDeletedFiles
-                .Where(path => currentState[path].Hash == addedHash)
-                .ToList();
-            var matchedAddedFilesCount = potentialAddedFiles
-                .Count(path => newState[path].Hash == addedHash);
-
-            if (matchedDeletedFiles.Count == 1 && matchedAddedFilesCount == 1)
-            {
-                var matchedDeletedFile = matchedDeletedFiles.First();
-                potentialDeletedFiles.Remove(matchedDeletedFile);
-                var oldVersion = currentState[matchedDeletedFile].Version;
-                newState[addedFile].Version = oldVersion;
-                report.Modified.Add($"{addedFile} (Version {oldVersion})");
-            }
-            else
-            {
-                actuallyAddedFiles.Add(addedFile);
-            }
-        }
-
-        foreach (var added in actuallyAddedFiles)
-        {
-            report.Added.Add($"{added} (Version 1)");
-        }
-
-        foreach (var deleted in potentialDeletedFiles)
-        {
-            report.Deleted.Add($"{deleted} (Last version {currentState[deleted].Version})");
-        }
+        var key = Path.GetFullPath(directoryPath).Replace('\\', '/').TrimEnd('/');
+        return OperatingSystem.IsWindows() ? key.ToLowerInvariant() : key;
     }
 
-    // ── Hashing ─────────────────────────────────────────────────────────
+    private static string GetPortableRelativePath(string basePath, string fullPath)
+    {
+        var relative = Path.GetRelativePath(basePath, fullPath);
+        return relative.Replace('\\', '/');
+    }
+
+    private static bool IsInSkippedDirectory(string relativePath, HashSet<string> skippedDirectoryPaths)
+    {
+        if (skippedDirectoryPaths.Contains("")) // Root was skipped
+        {
+            return true;
+        }
+
+        var parts = relativePath.Split('/');
+        var currentPath = "";
+        for (int i = 0; i < parts.Length - 1; i++)
+        {
+            currentPath = (i == 0) ? parts[0] : currentPath + "/" + parts[i];
+            if (skippedDirectoryPaths.Contains(currentPath))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private static string ComputeFileHash(string filePath)
     {
-        using var sha256 = SHA256.Create();
         using var stream = File.OpenRead(filePath);
-        var hashBytes = sha256.ComputeHash(stream);
-        return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        byte[] hashBytes = SHA256.HashData(stream);
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
-    // ── Parallel async directory tree enumeration ───────────────────────
-
-    private async Task EnumerateFilesAsync(
-        string directoryPath,
-        ConcurrentBag<string> collectedFiles)
+    /// <summary>
+    /// Treat a strict 1-to-1 add/remove pair with the same content hash as a rename (reported as modified, version preserved).
+    /// </summary>
+    private static void DetectFileRenames(
+        AnalysisReport report,
+        DirectorySnapshot oldSnapshot,
+        Dictionary<string, FileSnapshotItem> newStateFiles)
     {
-        try
+        var addedEntries = report.Added
+            .Select(line => (Line: line, Path: ExtractReportPath(line)))
+            .Where(x => newStateFiles.ContainsKey(x.Path))
+            .ToList();
+
+        var removedEntries = report.Removed
+            .Select(line => (Line: line, Path: ExtractReportPath(line)))
+            .Where(x => oldSnapshot.Files.ContainsKey(x.Path))
+            .ToList();
+
+        var matchedRemoved = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var added in addedEntries)
         {
-            // Collect files in the current directory (skip hidden/dot-files)
-            foreach (var file in Directory.EnumerateFiles(directoryPath))
+            var addedHash = newStateFiles[added.Path].Hash;
+            var hashMatches = removedEntries
+                .Where(r => !matchedRemoved.Contains(r.Path) && oldSnapshot.Files[r.Path].Hash == addedHash)
+                .ToList();
+
+            var addedWithSameHash = addedEntries.Count(a => newStateFiles[a.Path].Hash == addedHash);
+
+            if (hashMatches.Count != 1 || addedWithSameHash != 1)
             {
-                if (!Path.GetFileName(file).StartsWith('.'))
-                {
-                    collectedFiles.Add(file);
-                }
+                continue;
             }
 
-            // Recurse into subdirectories in parallel (skip hidden/dot-dirs)
-            var subDirs = Directory.EnumerateDirectories(directoryPath)
-                .Where(d => !Path.GetFileName(d).StartsWith('.'));
+            var removed = hashMatches[0];
+            matchedRemoved.Add(removed.Path);
 
-            var tasks = subDirs.Select(subDir =>
-                Task.Run(() => EnumerateFilesAsync(subDir, collectedFiles)));
+            var version = oldSnapshot.Files[removed.Path].Version;
+            newStateFiles[added.Path].Version = version;
 
-            await Task.WhenAll(tasks);
+            report.Added.Remove(added.Line);
+            report.Removed.Remove(removed.Line);
+            report.Modified.Add($"{added.Path} (Version {version})");
         }
-        catch (UnauthorizedAccessException ex)
-        {
-            logger.LogWarning("Skipping inaccessible directory: {Path}. Reason: {Message}",
-                directoryPath, ex.Message);
-        }
-        catch (IOException ex)
-        {
-            logger.LogWarning("Skipping unreadable directory: {Path}. Reason: {Message}",
-                directoryPath, ex.Message);
-        }
+    }
+
+    private static string ExtractReportPath(string reportLine)
+    {
+        var index = reportLine.IndexOf(" (", StringComparison.Ordinal);
+        return index < 0 ? reportLine : reportLine[..index];
+    }
+
+    private class FileScanResult
+    {
+        public string RelativePath { get; set; } = string.Empty;
+        public string Hash { get; set; } = string.Empty;
+        public long Length { get; set; }
+        public DateTime LastWriteTimeUtc { get; set; }
+        public bool IsUnstable { get; set; }
+        public string? UnstableReason { get; set; }
+        public bool IsSkipped { get; set; }
+        public string? SkipReason { get; set; }
     }
 }

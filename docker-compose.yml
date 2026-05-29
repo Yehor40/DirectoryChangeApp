@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./state.json:/app/state.json
+      - ./App_Data:/app/App_Data
       - type: bind
         source: ${HOST_FILES_ROOT:-.}
         target: /host-files

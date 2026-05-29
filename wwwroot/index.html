@@ -1,47 +1,129 @@
 <!DOCTYPE html>
-<html lang="cs">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Change detector</title>
+    <title>Directory Auditor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 
+<div class="background-decor">
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+</div>
+
 <main class="container">
     <header class="app-header">
-        <h1>File change detector</h1>
+        <h1>Directory Auditor</h1>
+        <p>Snapshot-based, permission-aware file system analyzer</p>
     </header>
 
-    <section class="analyzer-box">
+    <section class="analyzer-box glass-panel">
         <div class="input-group">
-            <input type="text" id="directoryPath" placeholder="Enter absolute path">
-            <button id="btnAnalyze" class="btn-primary">Analyze files</button>
+            <input type="text" id="directoryPath" placeholder="Enter absolute directory path (e.g., /Users/name/projects)">
+            <button id="btnAnalyze" class="btn-primary">
+                <span>Analyze Directory</span>
+                <div class="btn-glow"></div>
+            </button>
         </div>
         <div id="errorMessage" class="alert alert-danger hidden"></div>
     </section>
 
     <div id="loader" class="loader hidden">
         <div class="spinner"></div>
-        <p>Hashing and analysis...</p>
+        <p>Analyzing directory & hashing files in parallel...</p>
     </div>
 
     <section id="resultsSection" class="results-container hidden">
-        <h2>Analysis results:</h2>
+        <div id="scanStatusBanner" class="status-banner"></div>
 
-        <div class="report-card card-added">
-            <h3>New files: (<span id="countAdded">0</span>)</h3>
-            <ul id="listAdded" class="report-list"></ul>
+        <div class="audit-summary glass-panel">
+            <div class="summary-item">
+                <span class="summary-label">Audit Duration</span>
+                <span class="summary-value" id="valDuration">0.00 ms</span>
+            </div>
+            <div class="summary-item">
+                <span class="summary-label">Audited On (UTC)</span>
+                <span class="summary-value" id="valTimestamp">-</span>
+            </div>
         </div>
 
-        <div class="report-card card-modified">
-            <h3>Modified files: (<span id="countModified">0</span>)</h3>
-            <ul id="listModified" class="report-list"></ul>
-        </div>
+        <div class="results-grid">
+            <!-- New Files -->
+            <div class="report-card glass-panel card-added">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>New Files (<span id="countAdded">0</span>)</h3>
+                </div>
+                <ul id="listAdded" class="report-list"></ul>
+            </div>
 
-        <div class="report-card card-deleted">
-            <h3>Removed files: (<span id="countDeleted">0</span>)</h3>
-            <ul id="listDeleted" class="report-list"></ul>
+            <!-- Content-Modified Files -->
+            <div class="report-card glass-panel card-modified">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Content Modified (<span id="countModified">0</span>)</h3>
+                </div>
+                <ul id="listModified" class="report-list"></ul>
+            </div>
+
+            <!-- Metadata-Only Changed Files -->
+            <div class="report-card glass-panel card-metadata">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Metadata Touched (<span id="countMetadata">0</span>)</h3>
+                </div>
+                <ul id="listMetadata" class="report-list"></ul>
+            </div>
+
+            <!-- Removed Files -->
+            <div class="report-card glass-panel card-removed">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Removed Files (<span id="countRemoved">0</span>)</h3>
+                </div>
+                <ul id="listRemoved" class="report-list"></ul>
+            </div>
+
+            <!-- Removed Directories -->
+            <div class="report-card glass-panel card-removed-dirs">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Removed Directories (<span id="countRemovedDirs">0</span>)</h3>
+                </div>
+                <ul id="listRemovedDirs" class="report-list"></ul>
+            </div>
+
+            <!-- Skipped Directories -->
+            <div class="report-card glass-panel card-skipped-dirs">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Skipped Folders (<span id="countSkippedDirs">0</span>)</h3>
+                </div>
+                <ul id="listSkippedDirs" class="report-list"></ul>
+            </div>
+
+            <!-- Skipped Files -->
+            <div class="report-card glass-panel card-skipped-files">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Skipped Files (<span id="countSkippedFiles">0</span>)</h3>
+                </div>
+                <ul id="listSkippedFiles" class="report-list"></ul>
+            </div>
+
+            <!-- Unstable Files -->
+            <div class="report-card glass-panel card-unstable">
+                <div class="card-header">
+                    <span class="indicator"></span>
+                    <h3>Unstable Files (<span id="countUnstable">0</span>)</h3>
+                </div>
+                <ul id="listUnstable" class="report-list"></ul>
+            </div>
         </div>
     </section>
 </main>

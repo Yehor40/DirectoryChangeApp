@@ -15,7 +15,7 @@ async function executeAnalysis() {
 
     const pathValue = dirPathInput.value.trim();
     if (!pathValue) {
-        showErrors(['Please enter path to the catalog.']);
+        showErrors(['Please enter an absolute directory path to analyze.']);
         return;
     }
 
@@ -32,8 +32,6 @@ async function executeAnalysis() {
 
         if (!response.ok) {
             const errorData = await response.json();
-
-
             if (errorData.errors && Array.isArray(errorData.errors)) {
                 throw new ValidationError(errorData.errors);
             } else {
@@ -43,9 +41,33 @@ async function executeAnalysis() {
 
         const report = await response.json();
 
+        // Update summary values
+        document.getElementById('valDuration').textContent = `${report.scanDurationMs.toFixed(2)} ms`;
+        
+        // Format timestamp cleanly
+        const scanDate = new Date(report.scanTimestampUtc);
+        const formattedDate = scanDate.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+        document.getElementById('valTimestamp').textContent = formattedDate;
+
+        // Update status banner
+        const statusBanner = document.getElementById('scanStatusBanner');
+        if (report.isPartial) {
+            statusBanner.className = 'status-banner status-warning';
+            statusBanner.innerHTML = '⚠️ <strong>Partial Scan:</strong> Some folders or files could not be read. Deleted items inside skipped directories are preserved in the snapshot to avoid data loss.';
+        } else {
+            statusBanner.className = 'status-banner status-success';
+            statusBanner.innerHTML = '✓ <strong>Scan Complete:</strong> Successfully scanned all directories and verified file states.';
+        }
+
+        // Populate lists
         populateList('listAdded', 'countAdded', report.added);
         populateList('listModified', 'countModified', report.modified);
-        populateList('listDeleted', 'countDeleted', report.deleted);
+        populateList('listMetadata', 'countMetadata', report.metadataChanged);
+        populateList('listRemoved', 'countRemoved', report.removed);
+        populateList('listRemovedDirs', 'countRemovedDirs', report.removedDirectories);
+        populateList('listSkippedDirs', 'countSkippedDirs', report.skippedDirectories);
+        populateList('listSkippedFiles', 'countSkippedFiles', report.skippedFiles);
+        populateList('listUnstable', 'countUnstable', report.unstableFiles);
 
         resultsSection.classList.remove('hidden');
     } catch (error) {
@@ -68,24 +90,22 @@ function populateList(listId, countId, items) {
 
     if (items.length === 0) {
         const li = document.createElement('li');
-        li.style.background = 'transparent';
-        li.style.color = '#64748b';
-        li.style.fontStyle = 'italic';
-        li.textContent = 'Changes weren\'t detected';
+        li.className = 'empty-placeholder';
+        li.textContent = 'No changes detected';
         listElement.appendChild(li);
         return;
     }
 
     items.forEach(item => {
         const li = document.createElement('li');
-        li.textContent = item; 
+        li.textContent = item;
         listElement.appendChild(li);
     });
 }
 
 function showErrors(messages) {
     const errorMessage = document.getElementById('errorMessage');
-    errorMessage.innerHTML = ''; 
+    errorMessage.innerHTML = '';
 
     messages.forEach(msg => {
         const div = document.createElement('div');

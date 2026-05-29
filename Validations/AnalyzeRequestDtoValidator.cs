@@ -1,7 +1,6 @@
-
 namespace DirectoryChangeApp.Validations;
 
-public class AnalyzeRequestDtoValidator: AbstractValidator<AnalyzeRequestDto>
+public class AnalyzeRequestDtoValidator : AbstractValidator<AnalyzeRequestDto>
 {
     public AnalyzeRequestDtoValidator(IRuntimePathResolver runtimePathResolver)
     {

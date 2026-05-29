@@ -21,15 +21,30 @@ Své řešení stručně popište a zmiňte i jeho případná omezení.
 
 ## Přehled řešení
 
-Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá do souboru `state.json` a každé další skenování porovnává vůči tomuto uloženému stavu.
+Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá jako **snapshot** do `App_Data/snapshots/{hash}.json` (jeden soubor na analyzovaný kořenový adresář). Každé další skenování porovnává aktuální stav s uloženým snapshotem.
 
 Analýza reportuje:
 - nové soubory (včetně souborů v podadresářích)
-- upravené soubory (detekováno pomocí SHA-256 hashe obsahu)
-- odstraněné soubory
-- verze souborů, začínající na verzi 1, která se při změně obsahu souboru zvyšuje
+- upravené soubory (SHA-256 hash obsahu)
+- změny metadat (stejný obsah, jiný čas/velikost)
+- odstraněné soubory a podadresáře
+- přeskočené / nestabilní soubory při částečném skenu
+- verze souborů (od 1, +1 při změně obsahu; při přejmenování se verze zachová)
 
-Databáze se nepoužívá — pouze lokální JSON soubor.
+Databáze se nepoužívá — pouze lokální JSON snapshoty.
+
+## Principy práce (architektura)
+
+1. **Snapshot místo jednoho globálního souboru** — každý analyzovaný kořen má vlastní JSON snapshot (hash cesty), bez kolizí mezi různými adresáři.
+2. **Atomický zápis** — snapshot se zapisuje do `.tmp` a teprve potom se nahradí cílový soubor (ochrana proti poškození při pádu procesu).
+3. **Ruční analýza na tlačítko** — žádný `FileSystemWatcher`; diff pouze při explicitním požadavku z UI.
+4. **Paralelní hashování** — soubory se hashují paralelně (omezený počet vláken), průchod stromem je sekvenční s respektem k oprávněním.
+5. **Permission-aware scan** — nepřístupné složky/soubory se přeskočí, výsledek může být označen jako `IsPartial`; stav v přeskočených větvích se nemění (aby nedošlo k falešným „smazaným“ položkám).
+6. **Bezpečnost cest** — symlinky/reparse pointy se neprocházejí; skryté položky (`.`) a `App_Data` se ignorují.
+7. **Mapování cest v Dockeru** — vstupní cesta z hostitele se mapuje na `/host-files` přes `PathMapping` a `.env` (`HOST_FILES_ROOT`).
+8. **Detekce přejmenování** — striktní párování 1:1 (jeden nový + jeden smazaný soubor se stejným hashem) se hlásí jako úprava se zachovanou verzí.
+9. **Concurrency** — současné analýzy stejného kořene jsou serializovány (`SemaphoreSlim` na normalizovaný klíč cesty).
+10. **Audit logy** — časované fáze skenu, hashování, porovnání a uložení (viz konfigurace `Logging:Console` v `appsettings.json`).
 
 ## Požadavky
 
@@ -78,7 +93,7 @@ http://localhost:8080/swagger
 ```
 
 Docker compose připojí:
-- `./state.json` -> `/app/state.json` (stav analýzy)
+- `./App_Data` -> `/app/App_Data` (JSON snapshoty)
 - `${HOST_FILES_ROOT}` -> `/host-files` (čtení souborů hostitelského zařízení)
 
 Aplikace mapuje vstupní cestu z hostitele na cestu v kontejneru přes proměnné:
@@ -104,9 +119,8 @@ Spouští obnovu balíčků, build, testy, build .NET analyzátoru a CodeQL anal
 
 ## Omezení
 
-- Aplikace ukládá stav do lokálního souboru `state.json`.
+- Stav je v `App_Data/snapshots/` (složka je v `.gitignore`).
 - Změny souborů jsou detekovány pomocí hashe obsahu, nikoliv pomocí událostí souborového systému.
-- Sledují se pouze soubory; vytvoření nebo smazání složky samo o sobě se nehlásí.
 - Úkol předpokládá soubory do velikosti 50 MB a maximálně 100 souborů v adresáři.
 - Zadaná cesta k adresáři musí být přístupná běžícímu procesu. V Dockeru musí být hostitelská cesta pod `HOST_FILES_ROOT`, aby ji bylo možné mapovat do kontejneru.
 
@@ -133,15 +147,30 @@ Briefly describe your solution and mention any possible limitations.
 
 ## Solution Overview
 
-The application scans a directory path provided from the web UI. It stores the latest known state in a `state.json` file and compares the next scan against that saved state.
+The application scans a directory path provided from the web UI. It stores the latest known state as a **snapshot** in `App_Data/snapshots/{hash}.json` (one file per analyzed root). Each new scan is compared against that snapshot.
 
 The analysis reports:
 - new files (including files in subfolders)
-- modified files, detected by SHA-256 content hash
-- removed files
-- file versions, starting at version 1 and incrementing when file content changes
+- modified files (SHA-256 content hash)
+- metadata-only changes (same hash, different size/timestamp)
+- removed files and subdirectories
+- skipped/unstable files on partial scans
+- file versions (from 1, +1 on content change; preserved on rename)
 
-No database is used — only a local JSON file.
+No database is used — only local JSON snapshots.
+
+## Work principles (architecture)
+
+1. **Per-root snapshots** — each analyzed directory root gets its own JSON file (path hash), avoiding cross-directory collisions.
+2. **Atomic writes** — write to `.tmp`, then replace the target file.
+3. **Manual analysis only** — no `FileSystemWatcher`; diff runs on explicit UI/API request.
+4. **Parallel hashing** — files are hashed in parallel (bounded degree); tree walk respects permissions.
+5. **Permission-aware scanning** — inaccessible paths are skipped; `IsPartial` when needed; state under skipped branches is preserved to avoid false deletions.
+6. **Path safety** — symlinks/reparse points are not followed; dot-prefixed entries and `App_Data` are ignored.
+7. **Docker path mapping** — host paths map to `/host-files` via `PathMapping` and `.env` (`HOST_FILES_ROOT`).
+8. **Rename detection** — strict 1:1 add/remove pairs with the same hash are reported as modified with preserved version.
+9. **Concurrency** — concurrent analyses of the same root are serialized via `SemaphoreSlim`.
+10. **Audit logging** — timed phases for scan, hash, compare, and save (see `Logging:Console` in `appsettings.json`).
 
 ## Requirements
 
@@ -191,7 +220,7 @@ http://localhost:8080/swagger
 ```
 
 The compose setup mounts:
-- `./state.json` -> `/app/state.json` (analysis state)
+- `./App_Data` -> `/app/App_Data` (JSON snapshots)
 - `${HOST_FILES_ROOT}` -> `/host-files` (host device files, read-only)
 
 The app maps incoming host paths to container paths using:
@@ -219,8 +248,7 @@ It runs restore, build, tests, .NET analyzer build, and CodeQL analysis.
 
 ## Limitations
 
-- The app stores state in a local `state.json` file.
+- State lives under `App_Data/snapshots/` (ignored by git).
 - File changes are detected by content hash, not by filesystem events.
-- Only files are tracked; creating or deleting a folder alone is not reported.
 - The task assumes files up to 50 MB and up to 100 files per directory.
 - The entered directory path must be accessible to the running process. In Docker mode, the path must be under `HOST_FILES_ROOT` so it can be mapped inside the container.
