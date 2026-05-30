@@ -21,7 +21,7 @@ Své řešení stručně popište a zmiňte i jeho případná omezení.
 
 ## Přehled řešení
 
-Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá jako **snapshot** do `App_Data/snapshots/{hash}.json` (jeden soubor na analyzovaný kořenový adresář). Každé další skenování porovnává aktuální stav s uloženým snapshotem.
+Aplikace skenuje cestu k adresáři zadanou přes webové UI. Poslední známý stav ukládá jako **snapshot** do `bin/App_Data/snapshots/{hash}.json` (jeden soubor na analyzovaný kořenový adresář). Každé další skenování porovnává aktuální stav s uloženým snapshotem.
 
 Analýza reportuje:
 - nové soubory (včetně souborů v podadresářích)
@@ -147,7 +147,7 @@ Briefly describe your solution and mention any possible limitations.
 
 ## Solution Overview
 
-The application scans a directory path provided from the web UI. It stores the latest known state as a **snapshot** in `App_Data/snapshots/{hash}.json` (one file per analyzed root). Each new scan is compared against that snapshot.
+The application scans a directory path provided from the web UI. It stores the latest known state as a **snapshot** in `bin/App_Data/snapshots/{hash}.json` (one file per analyzed root). Each new scan is compared against that snapshot.
 
 The analysis reports:
 - new files (including files in subfolders)
